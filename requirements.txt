@@ -1,2 +1,3 @@
-crewai-tools
+'crewai[tools]'
+crewai
 streamlit
