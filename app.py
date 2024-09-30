@@ -1,4 +1,3 @@
-# app.py
 
 import streamlit as st
 import openai
@@ -7,8 +6,10 @@ import sys
 import re
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process
-from crewai_tools import SerperDevTool, BrowserbaseLoadTool
+from crewai_tools import SerperDevTool, BrowserbaseLoadTool, CSVSearchTool
 from langchain.chat_models import ChatOpenAI
+from io import BytesIO
+import tempfile
 
 # Load environment variables (if any)
 load_dotenv()
@@ -33,10 +34,68 @@ class StreamToExpander:
     def flush(self):
         pass  # Not needed for this implementation
 
+# Function to create and run CrewAI agents
+def get_race_prediction(race_details, csv_files):
+    # Initialize tools
+    search_tool = SerperDevTool()
+    browser_tool = BrowserbaseLoadTool()
+    
+    # Initialize CSVSearchTools for each uploaded CSV
+    csv_tools = []
+    for csv_file in csv_files:
+        # Save the uploaded CSV to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(csv_file.read())
+            tmp_path = tmp.name
+        csv_tool = CSVSearchTool(csv=tmp_path)
+        csv_tools.append(csv_tool)
+    
+    # Combine all tools
+    all_tools = [search_tool, browser_tool] + csv_tools
+
+    # Create an agent
+    predictor_agent = Agent(
+        role='Horse Racing Analyst',
+        goal='Predict the finishing positions of horses in a race using real-time data and CSV datasets.',
+        backstory='An expert in horse racing with extensive experience in analyzing race conditions and horse performance.',
+        tools=all_tools,
+        verbose=True,
+        llm=ChatOpenAI(model_name="gpt-4", temperature=0.7)
+    )
+
+    # Define the task
+    prediction_task = Task(
+        description=f"""
+Analyze the following race details and predict the finishing positions of the horses:
+
+Race Details:
+{race_details}
+
+Utilize real-time data from the internet and insights from the provided CSV files to inform your predictions.
+""",
+        expected_output="""
+Provide the predicted finishing position (1st, 2nd, 3rd, 4th, or Outside Top 4) for each horse along with a brief justification.
+""",
+        agent=predictor_agent
+    )
+
+    # Create a crew and add the task
+    crew = Crew(
+        agents=[predictor_agent],
+        tasks=[prediction_task],
+        verbose=True
+    )
+
+    # Execute the task
+    crew.kickoff()
+
+    # Retrieve the output
+    prediction = prediction_task.output
+    return prediction
+
 # Main application
 def main():
-    st.set_page_config(page_title="AI Horse Racing Predictor", layout="wide")
-    st.title("🐎 AI Horse Racing Predictor")
+    st.set_page_config(page_title="🐎 AI Horse Racing Predictor", layout="wide")
     st.markdown("""
         <style>
             /* Custom CSS to make the UI look cooler and futuristic */
@@ -53,89 +112,87 @@ def main():
             .stButton>button {
                 background-color: #00ccff;
                 color: #ffffff;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 16px;
             }
-            .stTextInput>div>div>input {
+            .stTextInput>div>div>input, .stTextArea>div>textarea, .stDateInput>div>div>input {
                 background-color: #1a1a1a;
                 color: #ffffff;
+                border: 1px solid #00ccff;
+                border-radius: 4px;
+                padding: 8px;
             }
-            .stTextArea>div>textarea {
+            .stSelectbox>div>div>div>div {
                 background-color: #1a1a1a;
                 color: #ffffff;
-            }
-            .stDateInput>div>div>input {
-                background-color: #1a1a1a;
-                color: #ffffff;
+                border: 1px solid #00ccff;
+                border-radius: 4px;
+                padding: 8px;
             }
             .css-1d391kg {
                 color: #00ccff;
             }
+            .stExpanderHeader {
+                color: #00ccff;
+            }
         </style>
         """, unsafe_allow_html=True)
+    st.title("🐎 AI Horse Racing Predictor")
     st.write("Predict the finishing positions of horses based on race details using AI and real-time data.")
 
-    # API Key Input
+    # API Key Inputs
     st.sidebar.header("API Keys Configuration")
+    openai_api_key = st.sidebar.text_input("Enter your OpenAI API Key", type="password")
+    serper_api_key = st.sidebar.text_input("Enter your SerperDev API Key", type="password")
+    browserbase_api_key = st.sidebar.text_input("Enter your BrowserBase API Key", type="password")
+    browserbase_project_id = st.sidebar.text_input("Enter your BrowserBase Project ID")
 
-    # OpenAI API Key
-    if 'OPENAI_API_KEY' not in st.session_state:
-        openai_api_key = st.sidebar.text_input("Enter your OpenAI API Key", type="password")
-        if openai_api_key:
-            st.session_state['OPENAI_API_KEY'] = openai_api_key
-            openai.api_key = openai_api_key
-    else:
-        openai.api_key = st.session_state['OPENAI_API_KEY']
+    # Set the API keys to environment variables
+    if openai_api_key:
+        os.environ['OPENAI_API_KEY'] = openai_api_key
+        openai.api_key = openai_api_key
+    if serper_api_key:
+        os.environ['SERPER_API_KEY'] = serper_api_key
+    if browserbase_api_key and browserbase_project_id:
+        os.environ['BROWSERBASE_API_KEY'] = browserbase_api_key
+        os.environ['BROWSERBASE_PROJECT_ID'] = browserbase_project_id
 
-    # Serper API Key
-    if 'SERPER_API_KEY' not in st.session_state:
-        serper_api_key = st.sidebar.text_input("Enter your Serper API Key", type="password")
-        if serper_api_key:
-            st.session_state['SERPER_API_KEY'] = serper_api_key
-            os.environ['SERPER_API_KEY'] = serper_api_key
-    else:
-        os.environ['SERPER_API_KEY'] = st.session_state['SERPER_API_KEY']
-
-    # BrowserBase API Key and Project ID
-    if 'BROWSERBASE_API_KEY' not in st.session_state or 'BROWSERBASE_PROJECT_ID' not in st.session_state:
-        browserbase_api_key = st.sidebar.text_input("Enter your BrowserBase API Key", type="password")
-        browserbase_project_id = st.sidebar.text_input("Enter your BrowserBase Project ID")
-        if browserbase_api_key and browserbase_project_id:
-            st.session_state['BROWSERBASE_API_KEY'] = browserbase_api_key
-            st.session_state['BROWSERBASE_PROJECT_ID'] = browserbase_project_id
-            os.environ['BROWSERBASE_API_KEY'] = browserbase_api_key
-            os.environ['BROWSERBASE_PROJECT_ID'] = browserbase_project_id
-    else:
-        os.environ['BROWSERBASE_API_KEY'] = st.session_state['BROWSERBASE_API_KEY']
-        os.environ['BROWSERBASE_PROJECT_ID'] = st.session_state['BROWSERBASE_PROJECT_ID']
-
-    # Check if all API keys are set
-    if not (openai.api_key and os.environ.get('SERPER_API_KEY') and os.environ.get('BROWSERBASE_API_KEY') and os.environ.get('BROWSERBASE_PROJECT_ID')):
-        st.error("Please enter all required API Keys in the sidebar to proceed.")
-        return
+    # Check if all API keys are provided
+    if not (openai_api_key and serper_api_key and browserbase_api_key and browserbase_project_id):
+        st.sidebar.error("Please enter all required API keys to proceed.")
+        st.stop()
 
     st.header("Enter Race Details")
     with st.form(key='prediction_form'):
-        race_name = st.text_input("Race Name")
+        race_name = st.text_input("Race Name", placeholder="e.g., Melbourne Cup")
         race_date = st.date_input("Race Date")
-        horses = st.text_area("List of Horses (one per line)")
-        weather_condition = st.text_input("Weather Condition (e.g., Sunny, Rainy)")
-        track_condition = st.text_input("Track Condition (e.g., Good, Soft)")
-        race_class_conditions = st.text_input("Race Class Conditions")
-        track_direction = st.text_input("Track Direction (e.g., Left-handed, Right-handed)")
+        horses = st.text_area("List of Horses (one per line)", placeholder="e.g.,\nHorse A\nHorse B\nHorse C")
+        weather_condition = st.text_input("Weather Condition (e.g., Sunny, Rainy)", placeholder="e.g., Sunny")
+        track_condition = st.text_input("Track Condition (e.g., Good, Soft)", placeholder="e.g., Good")
+        race_class_conditions = st.text_input("Race Class Conditions", placeholder="e.g., Grade 1")
+        track_direction = st.text_input("Track Direction (e.g., Left-handed, Right-handed)", placeholder="e.g., Left-handed")
+        csv_files = st.file_uploader("Upload CSV Files", type="csv", accept_multiple_files=True)
         submit_button = st.form_submit_button(label='Get Prediction')
 
     if submit_button:
+        # Input validations
         if not race_name.strip():
             st.error("Race name cannot be empty.")
-            return
+            st.stop()
 
         if not horses.strip():
             st.error("Please enter at least one horse.")
-            return
+            st.stop()
+
+        if not csv_files:
+            st.error("Please upload at least one CSV file for analysis.")
+            st.stop()
 
         horses_list = [horse.strip() for horse in horses.strip().split('\n') if horse.strip()]
         if not horses_list:
             st.error("Please enter at least one valid horse name.")
-            return
+            st.stop()
 
         # Prepare race details
         race_details_text = f"""
@@ -151,38 +208,51 @@ Horses:
             race_details_text += f"{idx}. {horse}\n"
 
         # Display the agent's workings in an expander
-        process_output_expander = st.expander("Agent's Workings:")
+        process_output_expander = st.expander("🔍 Agent's Workings:")
         # Redirect stdout to the expander
         original_stdout = sys.stdout
         sys.stdout = StreamToExpander(process_output_expander)
 
         with st.spinner('Generating prediction...'):
             try:
-                prediction = get_race_prediction(race_details_text)
+                prediction = get_race_prediction(race_details_text, csv_files)
             except Exception as e:
                 st.error(f"An error occurred: {e}")
                 sys.stdout = original_stdout
-                return
+                st.stop()
 
         # Restore original stdout
         sys.stdout = original_stdout
 
-        st.success("Prediction Generated!")
-        st.subheader("Prediction")
+        st.success("✅ Prediction Generated!")
+        st.subheader("📊 Prediction Results")
         st.write(prediction)
 
 # Function to create and run CrewAI agents
-def get_race_prediction(race_details):
+def get_race_prediction(race_details, csv_files):
     # Initialize tools
     search_tool = SerperDevTool()
     browser_tool = BrowserbaseLoadTool()
+    
+    # Initialize CSVSearchTools for each uploaded CSV
+    csv_tools = []
+    for csv_file in csv_files:
+        # Save the uploaded CSV to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(csv_file.read())
+            tmp_path = tmp.name
+        csv_tool = CSVSearchTool(csv=tmp_path)
+        csv_tools.append(csv_tool)
+    
+    # Combine all tools
+    all_tools = [search_tool, browser_tool] + csv_tools
 
     # Create an agent
     predictor_agent = Agent(
         role='Horse Racing Analyst',
-        goal='Predict the finishing positions of horses in a race using real-time data.',
+        goal='Predict the finishing positions of horses in a race using real-time data and CSV datasets.',
         backstory='An expert in horse racing with extensive experience in analyzing race conditions and horse performance.',
-        tools=[search_tool, browser_tool],
+        tools=all_tools,
         verbose=True,
         llm=ChatOpenAI(model_name="gpt-4", temperature=0.7)
     )
@@ -195,7 +265,7 @@ Analyze the following race details and predict the finishing positions of the ho
 Race Details:
 {race_details}
 
-Use real-time data from the internet to inform your predictions.
+Utilize real-time data from the internet and insights from the provided CSV files to inform your predictions.
 """,
         expected_output="""
 Provide the predicted finishing position (1st, 2nd, 3rd, 4th, or Outside Top 4) for each horse along with a brief justification.
