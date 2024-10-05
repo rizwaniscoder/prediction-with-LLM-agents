@@ -1,3 +1,7 @@
+streamlit
+openai
 crewai
 crewai_tools
-streamlit
+langchain
+python-dotenv
+PyPDF2
